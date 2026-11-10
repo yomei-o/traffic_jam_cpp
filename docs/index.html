@@ -135,6 +135,9 @@ worker.onmessage = (e) => {
 
 // ---- カメラ（録画）の切り替え ----
 async function loadCam(cam) {
+  // 動画は先に流し始める（道路の縁・背景・検出器の読み込みを待たせない）
+  stopScreen(); vid.srcObject = null; vid.src = cam + '_60s.mp4'; vid.play().catch(() => {});
+  result = null; hasShown = false;
   const txt = await (await fetch('cams/' + cam + '.txt')).text();
   document.getElementById('regions').value = txt;
   worker.postMessage({ type: 'regions', text: txt });
@@ -144,8 +147,6 @@ async function loadCam(cam) {
   gctx.drawImage(img, 0, 0, W, H);
   const px = gctx.getImageData(0, 0, W, H).data.buffer;
   worker.postMessage({ type: 'bg', pixels: px }, [px]);
-  stopScreen(); vid.srcObject = null; vid.src = cam + '_60s.mp4'; vid.play().catch(() => {});
-  result = null; hasShown = false;
 }
 const camButtons = [...document.querySelectorAll('button.cam')];
 const bScreen = document.getElementById('bScreen');
@@ -282,11 +283,9 @@ function drawChart() {
 }
 function loop() { drawView(); requestAnimationFrame(loop); }
 
-(async () => {
-  await loadModel(document.getElementById('model').value);
-  await loadCam('takebashi');
-  requestAnimationFrame(loop);
-})().catch(err => statusEl.textContent = '読み込みに失敗: ' + err);
+requestAnimationFrame(loop);
+Promise.all([loadCam('takebashi'), loadModel(document.getElementById('model').value)])
+  .catch(err => statusEl.textContent = '読み込みに失敗: ' + err);
 </script>
 </body>
 </html>
