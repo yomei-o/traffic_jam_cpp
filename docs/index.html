@@ -48,11 +48,15 @@ details summary { cursor: pointer; color: var(--muted); }
   <div class="bar">
     <button class="cam on" data-cam="takebashi">首都高 竹橋JCT</button>
     <button class="cam" data-cam="gofukubashi">首都高 呉服橋JCT</button>
+    <button class="cam" data-cam="night_takebashi">夜 竹橋JCT</button>
+    <button class="cam" data-cam="night_gofukubashi">夜 呉服橋JCT</button>
     <label class="btn">動画を開く<input type="file" id="file" accept="video/*"></label>
     <button id="bScreen">画面共有</button>
     <select id="model">
-      <option value="models/vehicle_det_640.onnx">検出器 速さ優先 640</option>
-      <option value="models/vehicle_det.onnx">検出器 精度優先 960</option>
+      <option value="models/vehicle_det_allday_640.onnx">検出器 昼夜モデル 640（速い）</option>
+      <option value="models/vehicle_det_allday.onnx">検出器 昼夜モデル 960</option>
+      <option value="models/vehicle_det_640.onnx">検出器 昼だけモデル 640（速い）</option>
+      <option value="models/vehicle_det.onnx">検出器 昼だけモデル 960</option>
       <option value="">検出器なし（A〜E だけ）</option>
     </select>
     <select id="every">
