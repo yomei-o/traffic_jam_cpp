@@ -3,6 +3,12 @@
 首都高のライブカメラの映像で、道路（領域）ごとに「渋滞しているか」を 7 通りの方法で判別する C++ です。
 判別そのものは **静止画 1 枚** で行います。動画は、答え合わせの「参照の動き」を測るためだけに使います。
 
+**デモ**: https://yomei-o.github.io/traffic_jam_cpp/
+動画から一定の間隔で静止画を切り出し、道路ごとに判別します。首都高 竹橋JCT・呉服橋JCT の録画（背景の校正つき）入りで、手元の動画や画面共有でも動きます。
+計算はネイティブと同じ `traffic_jam.hpp` と `vehicle_det.hpp` を WebAssembly にしたものです。
+同じ 2 枚（0.33 秒差）で、ネイティブと全項目の値が一致することを確かめてあります（`wasm/test_node.js`）。
+1 回の判別は、検出器 640 版で約 0.6 秒です（ヘッドレス Chromium）。
+
 ## 考え方：道路をまっすぐな帯に伸ばす
 
 道路は「左の縁」「右の縁」の折れ線（手前→奥）で指定します（`cams/*.txt`）。その間を、**車線幅を物差しにした帯画像** に直してから判別します。
@@ -88,3 +94,5 @@ cmake --build build --config Release --target traffic_jam
 - `traffic_jam.hpp` — 帯画像と 7 つの方法（ヘッダーオンリー、依存なし）
 - `main.cpp` — コマンド（mediakit で mp4 を読み書き、vehicle_det で検出）
 - `cams/` — カメラごとの道路の縁
+- `wasm/` — ブラウザ用の入口（`tj_wasm.cpp`）とビルド（`build.sh`、隣の vehicle_det_cpp を使う）
+- `docs/` — デモ（GitHub Pages）。録画・背景・検出器のモデルを同梱（モデルは vehicle_det_cpp と同じもの、AGPL-3.0）

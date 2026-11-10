@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>渋滞判別デモ</title>
+<style>
+:root { --bg: #f6f7f9; --panel: #ffffff; --fg: #1d232b; --muted: #5d6875; --line: #d8dde3; --accent: #1f6feb; --jam: #e5484d; --free: #30a46c; --off: #8b949e; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #0f1318; --panel: #181e25; --fg: #e3e8ee; --muted: #93a0ae; --line: #2a333d; --accent: #58a6ff; }
+}
+:root[data-theme="dark"] { --bg: #0f1318; --panel: #181e25; --fg: #e3e8ee; --muted: #93a0ae; --line: #2a333d; --accent: #58a6ff; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 system-ui, "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+main { max-width: 1360px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.35rem; margin: 0 0 4px; }
+p.lead { color: var(--muted); margin: 0 0 12px; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+button, label.btn, select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+button:hover, label.btn:hover { border-color: var(--accent); }
+button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+input[type=file] { display: none; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; }
+@media (max-width: 1000px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+canvas { width: 100%; height: auto; display: block; border-radius: 4px; }
+#view { background: #000; }
+.note { color: var(--muted); font-size: 0.84rem; }
+#status { color: var(--muted); font-size: 0.85rem; }
+h2 { font-size: 1rem; margin: 0 0 6px; }
+.verdict { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.verdict b { font-size: 1.05rem; }
+.pill { color: #fff; border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 0.9rem; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.88rem; }
+th, td { padding: 3px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; }
+textarea { width: 100%; min-height: 150px; font: 12px/1.4 ui-monospace, Consolas, monospace; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+details summary { cursor: pointer; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>道路カメラの静止画から渋滞を判別する</h1>
+  <p class="lead">動画から一定の間隔で静止画を切り出し、道路ごとに 7 通りの方法で「渋滞か」を判別します（C++ を WebAssembly にしたもの、ブラウザの中だけで動きます）。答え合わせの「参照の動き」だけは、0.33 秒前の 1 枚との差から測ります。</p>
+
+  <div class="bar">
+    <button class="cam on" data-cam="takebashi">首都高 竹橋JCT</button>
+    <button class="cam" data-cam="gofukubashi">首都高 呉服橋JCT</button>
+    <label class="btn">動画を開く<input type="file" id="file" accept="video/*"></label>
+    <button id="bScreen">画面共有</button>
+    <select id="model">
+      <option value="models/vehicle_det_640.onnx">検出器 速さ優先 640</option>
+      <option value="models/vehicle_det.onnx">検出器 精度優先 960</option>
+      <option value="">検出器なし（A〜E だけ）</option>
+    </select>
+    <select id="every">
+      <option value="0">切り出し: 終わりしだい次</option>
+      <option value="2000" selected>切り出し: 2 秒おき</option>
+      <option value="5000">切り出し: 5 秒おき</option>
+    </select>
+    <span id="status">読み込み中…</span>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="panel">
+        <canvas id="view" width="1280" height="720"></canvas>
+        <p class="note">表示しているのは最後に判別した静止画です。道路は、渋滞と言った方法の数で緑→赤に塗っています。水色の枠は車両検出器、白い点は数えた位置（枠の下端の中央）です。</p>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <h2>推移（渋滞と言った方法の数 ÷ 方法の数）</h2>
+        <canvas id="chart" width="1280" height="220"></canvas>
+        <p class="note">実線が静止画の方法の票、点線が参照の動き（下＝動いている、上＝止まっている）。</p>
+      </div>
+    </div>
+    <div>
+      <div class="panel" id="verdicts"><h2>判定</h2><p class="note">最初の判別を待っています…</p></div>
+      <div class="panel" style="margin-top:14px">
+        <h2>方法ごとの値</h2>
+        <div id="table"></div>
+        <p class="note" id="perf"></p>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <details>
+          <summary>方法の説明</summary>
+          <p class="note">道路を車線幅の帯に伸ばしてから測ります（1 行 ＝ 車線幅の 1/16）。長さは車線幅の何倍か。<br>
+          A エッジ密度・B 占有率（背景との差）・C 車間・D 台数密度（帯で拾った塊）・E 赤い尾灯・F 検出台数密度・G 車頭間隔（検出器の枠から）。<br>
+          R 参照の動き＝0.33 秒で動いた画素 ÷ 車の画素。占有率 0.15 超で動き 0.35 未満なら「止まっている」。<br>
+          しきい値はまだ仮です（止まった渋滞の映像が無く、決められていない）。</p>
+        </details>
+        <details style="margin-top:8px">
+          <summary>道路の縁（書き換えて「適用」）</summary>
+          <textarea id="regions"></textarea>
+          <button id="applyRegions" style="margin-top:6px">適用</button>
+          <p class="note">region 名前 車線数 / L x,y ...（左の縁、手前→奥） / R x,y ...（右の縁）。座標は 1280×720。自分の動画で使うときはここを書き換えてください（背景の校正は外れます）。</p>
+        </details>
+      </div>
+    </div>
+  </div>
+  <video id="vid" muted playsinline loop style="display:none"></video>
+</main>
+
+<script>
+const W = 1280, H = 720, DELTA_MS = 333;
+const NAMES = ['A エッジ密度', 'B 占有率', 'C 車間', 'D 台数密度', 'E 赤い尾灯', 'F 検出台数密度', 'G 車頭間隔'];
+const view = document.getElementById('view'), ctx = view.getContext('2d');
+const chart = document.getElementById('chart'), cctx = chart.getContext('2d');
+const vid = document.getElementById('vid');
+const statusEl = document.getElementById('status');
+const grab = document.createElement('canvas'); grab.width = W; grab.height = H;
+const gctx = grab.getContext('2d', { willReadFrequently: true });
+const shown = document.createElement('canvas'); shown.width = W; shown.height = H;
+const pending = document.createElement('canvas'); pending.width = W; pending.height = H;
+let worker = new Worker('worker.js');
+let regionsInfo = null, result = null, busy = false, detOk = false, lastStart = 0, screenStream = null, hasShown = false;
+const history = [];  // {t, regions:[{frac, ref}]}
+
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+worker.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === 'regions') { regionsInfo = JSON.parse(m.json); history.length = 0; }
+  else if (m.type === 'det') { detOk = m.nodes > 0; statusEl.textContent = detOk ? '検出器 読み込み完了' : (document.getElementById('model').value ? '検出器を読めませんでした' : '検出器なし'); }
+  else if (m.type === 'result') {
+    busy = false;
+    result = JSON.parse(m.json);
+    shown.getContext('2d').drawImage(pending, 0, 0); hasShown = true;
+    history.push({ regions: result.regions.map(r => ({ frac: r.votes / r.total, ref: r.ref })) });
+    if (history.length > 120) history.shift();
+    render();
+  } else if (m.type === 'error') { busy = false; statusEl.textContent = 'エラー: ' + m.text; }
+};
+
+// ---- カメラ（録画）の切り替え ----
+async function loadCam(cam) {
+  const txt = await (await fetch('cams/' + cam + '.txt')).text();
+  document.getElementById('regions').value = txt;
+  worker.postMessage({ type: 'regions', text: txt });
+  const img = new Image();
+  img.src = 'cams/' + cam + '_bg.png';
+  await img.decode();
+  gctx.drawImage(img, 0, 0, W, H);
+  const px = gctx.getImageData(0, 0, W, H).data.buffer;
+  worker.postMessage({ type: 'bg', pixels: px }, [px]);
+  stopScreen(); vid.srcObject = null; vid.src = cam + '_60s.mp4'; vid.play().catch(() => {});
+  result = null; hasShown = false;
+}
+const camButtons = [...document.querySelectorAll('button.cam')];
+const bScreen = document.getElementById('bScreen');
+function setActive(b) { for (const x of [...camButtons, bScreen]) x.classList.toggle('on', x === b); }
+for (const b of camButtons) b.onclick = () => { setActive(b); loadCam(b.dataset.cam); };
+function stopScreen() { if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; } }
+document.getElementById('file').onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  setActive(null); stopScreen(); worker.postMessage({ type: 'bg', pixels: null });
+  vid.srcObject = null; vid.src = URL.createObjectURL(f); vid.play().catch(() => {});
+  result = null; hasShown = false;
+  statusEl.textContent = '自分の動画：道路の縁を書き換えてください（背景の校正なし）';
+};
+bScreen.onclick = async () => {
+  try {
+    const s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false });
+    stopScreen(); screenStream = s; vid.removeAttribute('src'); vid.srcObject = s; await vid.play();
+    setActive(bScreen); result = null; hasShown = false;
+    statusEl.textContent = '画面共有中（YouTube を全画面にすると座標が合います。背景の校正はいまのカメラのまま）';
+  } catch (err) { statusEl.textContent = '画面共有はキャンセルされました'; }
+};
+document.getElementById('applyRegions').onclick = () => worker.postMessage({ type: 'regions', text: document.getElementById('regions').value });
+document.getElementById('model').onchange = (e) => loadModel(e.target.value);
+
+async function loadModel(url) {
+  detOk = false;
+  if (!url) { worker.postMessage({ type: 'det', model: null }); return; }
+  statusEl.textContent = '検出器を読み込み中…';
+  const buf = await (await fetch(url)).arrayBuffer();
+  worker.postMessage({ type: 'det', model: buf }, [buf]);
+}
+
+// ---- 切り出し：0.33 秒前の 1 枚と、いまの 1 枚 ----
+function snap() { gctx.drawImage(vid, 0, 0, W, H); return gctx.getImageData(0, 0, W, H).data.buffer; }
+async function capture() {
+  if (busy || !regionsInfo || vid.readyState < 2) return;
+  busy = true;
+  lastStart = performance.now();
+  const prev = snap();
+  await new Promise(r => setTimeout(r, DELTA_MS));
+  if (vid.readyState < 2) { busy = false; return; }
+  const cur = snap();
+  pending.getContext('2d').drawImage(grab, 0, 0);
+  worker.postMessage({ type: 'frame', cur, prev, useDet: detOk }, [cur, prev]);
+}
+setInterval(() => {
+  const every = +document.getElementById('every').value;
+  if (!busy && performance.now() - lastStart >= every) capture();
+}, 100);
+
+// ---- 描画 ----
+function color(frac) {  // 0 = 緑, 1 = 赤
+  const r = Math.round(48 + (229 - 48) * frac), g = Math.round(164 + (72 - 164) * frac), b = Math.round(108 + (77 - 108) * frac);
+  return [r, g, b];
+}
+function drawView() {
+  if (hasShown) ctx.drawImage(shown, 0, 0);
+  else if (vid.readyState >= 2) ctx.drawImage(vid, 0, 0, W, H);
+  if (!regionsInfo) return;
+  regionsInfo.regions.forEach((rg, i) => {
+    const r = result && result.regions[i];
+    const [cr, cg, cb] = r ? color(r.votes / r.total) : [139, 148, 158];
+    ctx.beginPath();
+    rg.poly.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.30)`; ctx.fill();
+    ctx.strokeStyle = `rgb(${cr},${cg},${cb})`; ctx.lineWidth = 3; ctx.stroke();
+    // 名前と票
+    const p0 = rg.poly[0];
+    ctx.font = 'bold 22px system-ui'; ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    const label = rg.name + (r ? `  ${r.votes}/${r.total}` : '');
+    const tw = ctx.measureText(label).width;
+    const lx = Math.min(Math.max(p0[0] + 8, 4), W - tw - 16), ly = Math.min(Math.max(p0[1] - 40, 4), H - 34);
+    ctx.fillRect(lx, ly, tw + 12, 30);
+    ctx.fillStyle = '#fff'; ctx.fillText(label, lx + 6, ly + 23);
+  });
+  if (hasShown && result) {
+    ctx.strokeStyle = '#00c8ff'; ctx.lineWidth = 2; ctx.fillStyle = '#fff';
+    for (const b of result.boxes) {
+      ctx.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+      ctx.fillRect((b[0] + b[2]) / 2 - 3, b[3] - 3, 6, 6);
+    }
+  }
+}
+function fmt(v, k) { if (v === null || v === undefined) return '–'; return k === 4 ? v.toFixed(4) : (Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)); }
+function render() {
+  if (!result || !regionsInfo) return;
+  const jam = css('--jam'), free = css('--free'), off = css('--off');
+  let h = '<h2>判定</h2>';
+  result.regions.forEach(r => {
+    const frac = r.votes / r.total, isJam = frac >= 0.5;
+    const ref = r.ref < 0 ? '' : (r.ref ? '止まっている' : '動いている');
+    h += `<div class="verdict"><b>${r.name}</b><span><span class="note">参照: ${ref}　</span>` +
+         `<span class="pill" style="background:${isJam ? jam : free}">${isJam ? '渋滞寄り' : '流れている'} ${r.votes}/${r.total}</span></span></div>`;
+  });
+  document.getElementById('verdicts').innerHTML = h;
+  let t = '<table><tr><th>方法</th>' + result.regions.map(r => `<th>${r.name}</th>`).join('') + '</tr>';
+  for (let k = 0; k < 7; k++) {
+    t += `<tr><td>${NAMES[k]}</td>` + result.regions.map(r => {
+      const j = r.jam[k];
+      return `<td>${fmt(r.v[k], k)} <span class="dot" style="background:${j < 0 ? off : j ? jam : free}"></span></td>`;
+    }).join('') + '</tr>';
+  }
+  t += '<tr><td>R 参照の動き</td>' + result.regions.map(r => `<td>${fmt(r.motion, 0)} <span class="dot" style="background:${r.ref < 0 ? off : r.ref ? jam : free}"></span></td>`).join('') + '</tr>';
+  t += '<tr><td>検出した台数</td>' + result.regions.map(r => `<td>${r.count < 0 ? '–' : r.count}</td>`).join('') + '</tr></table>';
+  document.getElementById('table').innerHTML = t;
+  document.getElementById('perf').textContent = `1 回 ${(result.ms / 1000).toFixed(2)} 秒（うち検出器 ${(result.det_ms / 1000).toFixed(2)} 秒）・背景の校正 ${result.bg ? 'あり' : 'なし'}`;
+  drawChart();
+}
+function drawChart() {
+  const cw = chart.width, ch = chart.height, pad = 30;
+  cctx.clearRect(0, 0, cw, ch);
+  cctx.strokeStyle = css('--line'); cctx.lineWidth = 1; cctx.fillStyle = css('--muted'); cctx.font = '18px system-ui';
+  for (const v of [0, 0.5, 1]) {
+    const y = ch - 10 - (ch - 20) * v;
+    cctx.beginPath(); cctx.moveTo(pad, y); cctx.lineTo(cw, y); cctx.stroke();
+    cctx.fillText(v.toFixed(1), 0, y + 6);
+  }
+  if (!history.length) return;
+  const palette = ['#e5484d', '#3e63dd', '#f5a524', '#30a46c'];
+  const n = history[0].regions.length;
+  const X = i => pad + (cw - pad - 8) * i / Math.max(1, history.length - 1);
+  const Y = v => ch - 10 - (ch - 20) * v;
+  for (let k = 0; k < n; k++) {
+    cctx.strokeStyle = palette[k % palette.length]; cctx.lineWidth = 3; cctx.setLineDash([]);
+    cctx.beginPath(); history.forEach((h, i) => { const v = h.regions[k] ? h.regions[k].frac : 0; i ? cctx.lineTo(X(i), Y(v)) : cctx.moveTo(X(i), Y(v)); }); cctx.stroke();
+    cctx.setLineDash([6, 6]); cctx.lineWidth = 2;
+    cctx.beginPath(); let pen = false;
+    history.forEach((h, i) => { const r = h.regions[k]; if (!r || r.ref < 0) { pen = false; return; } const v = r.ref ? 0.98 : 0.02; pen ? cctx.lineTo(X(i), Y(v)) : cctx.moveTo(X(i), Y(v)); pen = true; });
+    cctx.stroke();
+    if (regionsInfo && regionsInfo.regions[k]) { cctx.setLineDash([]); cctx.fillStyle = palette[k % palette.length]; cctx.fillText(regionsInfo.regions[k].name, cw - 120, 22 + 22 * k); }
+  }
+  cctx.setLineDash([]);
+}
+function loop() { drawView(); requestAnimationFrame(loop); }
+
+(async () => {
+  await loadModel(document.getElementById('model').value);
+  await loadCam('takebashi');
+  requestAnimationFrame(loop);
+})().catch(err => statusEl.textContent = '読み込みに失敗: ' + err);
+</script>
+</body>
+</html>
